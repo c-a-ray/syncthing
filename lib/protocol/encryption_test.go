@@ -254,3 +254,174 @@ func TestIsEncryptedParent(t *testing.T) {
 		}
 	}
 }
+
+func TestDeterministicEncryptionDecryption(t *testing.T) {
+	t.Parallel()
+	var key [keySize]byte
+	copy(key[:], []byte("thisisatestkeyfortestingpurposesonly!!")) // 32-byte key
+
+	testCases := []struct {
+		name          string
+		data          []byte
+		additional    []byte
+		expectedError bool
+	}{
+		{
+			name:          "Empty data, no additional data",
+			data:          []byte{},
+			additional:    nil,
+			expectedError: false,
+		},
+		{
+			name:          "Regular string, no additional data",
+			data:          []byte("Hello, world!"),
+			additional:    nil,
+			expectedError: false,
+		},
+		{
+			name:          "Regular string with additional data",
+			data:          []byte("Hello, world!"),
+			additional:    []byte("extra"),
+			expectedError: false,
+		},
+		{
+			name:          "Large data block",
+			data:          []byte(strings.Repeat("a", 1024)), // 1KB of 'a'
+			additional:    nil,
+			expectedError: false,
+		},
+		{
+			name:          "Large data block with additional data",
+			data:          []byte(strings.Repeat("a", 1024)), // 1KB of 'a'
+			additional:    []byte("extra"),
+			expectedError: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			enc1 := encryptDeterministic(tc.data, &key, tc.additional)
+			enc2 := encryptDeterministic(tc.data, &key, tc.additional)
+
+			if !bytes.Equal(enc1, enc2) {
+				t.Errorf("Expected consistent encryption output, got different results")
+			}
+
+			dec, err := decryptDeterministic(enc1, &key, tc.additional)
+			if tc.expectedError {
+				if err == nil {
+					t.Error("Expected an error, but got none")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error during decryption: %v", err)
+				}
+				if !bytes.Equal(tc.data, dec) {
+					t.Errorf("Decrypted data does not match original; got %q, want %q", dec, tc.data)
+				}
+			}
+
+			if tc.additional != nil {
+				differentEnc := encryptDeterministic(tc.data, &key, []byte("different"))
+				if bytes.Equal(enc1, differentEnc) {
+					t.Error("Changing additional data should yield different encryption output")
+				}
+			}
+		})
+	}
+}
+
+func TestRandomNonceUniqueness(t *testing.T) {
+	t.Parallel()
+	nonces := make(map[string]struct{})
+	for i := 0; i < 100; i++ {
+		nonce := randomNonce()
+		nonceStr := string(nonce[:])
+		if _, exists := nonces[nonceStr]; exists {
+			t.Error("randomNonce generated a duplicate nonce")
+		}
+		nonces[nonceStr] = struct{}{}
+	}
+}
+
+func TestDeslashify(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{
+			name:    "Valid encrypted path with single character prefix",
+			input:   "A.syncthing-enc/BC/DEFG",
+			want:    "ABCDEFG",
+			wantErr: false,
+		},
+		{
+			name:    "Valid encrypted path with multiple components",
+			input:   "T.syncthing-enc/UV/WXYZ/1234",
+			want:    "TUVWXYZ1234",
+			wantErr: false,
+		},
+		{
+			name:    "Empty input string",
+			input:   "",
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name:    "Invalid path missing encryptedDirExtension",
+			input:   "A/randomdir/BC/DEFG",
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name:    "Valid path with only prefix and no components",
+			input:   "X.syncthing-enc/",
+			want:    "X",
+			wantErr: false,
+		},
+		{
+			name:    "Path missing prefix",
+			input:   "/syncthing-enc/DE/FG",
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name:    "Path with valid prefix but wrong extension",
+			input:   "A.invalid-enc/BC/DEFG",
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name:    "Valid path with multiple separators",
+			input:   "M.syncthing-enc/N/OP/QRS/TUV/WXYZ",
+			want:    "MNOPQRSTUVWXYZ",
+			wantErr: false,
+		},
+		{
+			name:    "Path with only prefix and extension",
+			input:   "K.syncthing-enc",
+			want:    "K",
+			wantErr: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := deslashify(test.input)
+			if test.wantErr && err == nil {
+				t.Errorf("Expected error but got nil")
+			}
+			if !test.wantErr && err != nil {
+				t.Errorf("Got unexpected error: %v", err)
+			}
+			if got != test.want {
+				t.Errorf("Expected %q, got %q", test.want, got)
+			}
+		})
+	}
+}

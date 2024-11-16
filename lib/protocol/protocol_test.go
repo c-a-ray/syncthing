@@ -1021,3 +1021,261 @@ func getRawConnection(c Connection) *rawConnection {
 	}
 	return raw
 }
+
+func TestMessageContext(t *testing.T) {
+	tests := []struct {
+		name       string
+		message    message
+		want       string
+		wantErrMsg string
+	}{
+		{
+			name:       "ClusterConfig",
+			message:    &ClusterConfig{},
+			want:       "cluster-config",
+			wantErrMsg: "",
+		},
+		{
+			name:       "Index",
+			message:    &Index{Folder: "test-folder"},
+			want:       "index for test-folder",
+			wantErrMsg: "",
+		},
+		{
+			name:       "IndexUpdate",
+			message:    &IndexUpdate{Folder: "update-folder"},
+			want:       "index-update for update-folder",
+			wantErrMsg: "",
+		},
+		{
+			name:       "Request",
+			message:    &Request{Folder: "req-folder", Name: "req-name"},
+			want:       `request for "req-name" in req-folder`,
+			wantErrMsg: "",
+		},
+		{
+			name:       "Response",
+			message:    &Response{},
+			want:       "response",
+			wantErrMsg: "",
+		},
+		{
+			name:       "DownloadProgress",
+			message:    &DownloadProgress{Folder: "download-folder"},
+			want:       "download-progress for download-folder",
+			wantErrMsg: "",
+		},
+		{
+			name:       "Ping",
+			message:    &Ping{},
+			want:       "ping",
+			wantErrMsg: "",
+		},
+		{
+			name:       "Close",
+			message:    &Close{},
+			want:       "close",
+			wantErrMsg: "",
+		},
+		{
+			name:       "Unknown",
+			message:    nil,
+			want:       "",
+			wantErrMsg: "unknown or empty message",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := messageContext(tt.message)
+			if got != tt.want {
+				t.Errorf("messageContext() = %v, want %v", got, tt.want)
+			}
+			if (err != nil && err.Error() != tt.wantErrMsg) || (err == nil && tt.wantErrMsg != "") {
+				t.Errorf("messageContext() error = %v, wantErrMsg %v", err, tt.wantErrMsg)
+			}
+		})
+	}
+}
+
+func TestLuhnify(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{
+			name:    "ValidInput",
+			input:   "AB725E4GHIQPLAB725E4GHIQPLAB725E4GHIQPLAB725E4GHIQPL", // Valid 52 characters
+			wantErr: false,
+		},
+		{
+			name:    "InvalidInputLength",
+			input:   "AB725E4GHIQPL3ZFGT", // Too short
+			wantErr: true,
+		},
+		{
+			name:    "InvalidCharacter",
+			input:   "AB725E4GHIQPL3ZFGTAB725E4GHIQPL3ZFGTAB725E4GHIQPL3ZFG1", // Contains '1'
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					if tt.wantErr {
+						t.Logf("Expected panic: %v", r)
+					} else {
+						t.Errorf("Unexpected panic: %v", r)
+					}
+				}
+			}()
+
+			result, err := luhnify(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("luhnify() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !tt.wantErr && len(result) == 0 {
+				t.Errorf("luhnify() returned empty string for input %q", tt.input)
+			}
+		})
+	}
+}
+
+func TestUnluhnify(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+		wantErr  bool
+	}{
+		{
+			name:     "ValidInput",
+			input:    "AB725E4GHIQPLNAB725E4GHIQPLNAB725E4GHIQPLNAB725E4GHIQPLN", // Luhnified input
+			expected: "AB725E4GHIQPLAB725E4GHIQPLAB725E4GHIQPLAB725E4GHIQPL",
+			wantErr:  false,
+		},
+		{
+			name:     "InvalidInputLength",
+			input:    "AB725E4GHIQPLG-AB725E4GHIQPLG", // Too short
+			expected: "",
+			wantErr:  true,
+		},
+		{
+			name:     "InvalidCheckDigit",
+			input:    "AB725E4GHIQPLXAB725E4GHIQPLXAB725E4GHIQPLXAB725E4GHIQPLX", // Invalid check digit 'X'
+			expected: "",
+			wantErr:  true,
+		},
+		{
+			name:     "InvalidCharacters",
+			input:    "AB725E4GHIQPL1AB725E4GHIQPL1AB725E4GHIQPL1AB725E4GHIQPL1", // Invalid character '1'
+			expected: "",
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := unluhnify(tt.input)
+
+			// Check if error is expected
+			if (err != nil) != tt.wantErr {
+				t.Errorf("unluhnify() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			// Check the result if no error is expected
+			if !tt.wantErr && result != tt.expected {
+				t.Errorf("unluhnify() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestChunkify(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"12345671234567", "1234567-1234567"},                                // Two 7-character chunks
+		{"123456712345671234567", "1234567-1234567-1234567"},                 // Three 7-character chunks
+		{"1234567", "1234567"},                                               // Single chunk of exactly 7 characters
+		{"abcdefgijklmnopqrstuvwabcdefg", "abcdefg-ijklmno-pqrstuv-wabcdef"}, // Multiple non-numeric chunks
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("chunkify(%q) panicked: %v", tt.input, r)
+				}
+			}()
+			result := chunkify(tt.input)
+			if result != tt.expected {
+				t.Errorf("chunkify(%q) = %q; want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+
+	// Explicitly skip testing invalid inputs like empty strings
+	t.Run("InvalidInputLength", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Logf("Skipping invalid input length test: chunkify panicked as expected: %v", r)
+			}
+		}()
+		result := chunkify("")
+		t.Errorf("chunkify(\"\") = %q; invalid input should not be tested", result)
+	})
+}
+
+func TestUnchunkify(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"123-456-7890", "1234567890"},         // Removes all hyphens
+		{"123 456 7890", "1234567890"},         // Removes all spaces
+		{"123-456 7890", "1234567890"},         // Removes mixed hyphens and spaces
+		{"no-chunks-here", "nochunkshere"},     // Removes hyphens in words
+		{"spaces only here", "spacesonlyhere"}, // Removes all spaces in text
+		{"", ""},                               // Handles empty string
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := unchunkify(tt.input)
+			if result != tt.expected {
+				t.Errorf("unchunkify(%q) = %q; want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestUntypeoify(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"h3ll0 w0rld", "h3llO wOrld"},
+		{"518", "5IB"},
+		{"password123", "passwordI23"},
+		{"8081", "BOBI"},
+		{"", ""},
+		{"NO typ05 h3r3", "NO typO5 h3r3"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := untypeoify(tt.input)
+			if result != tt.expected {
+				t.Errorf("untypeoify(%q) = %q; want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}

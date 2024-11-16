@@ -130,3 +130,36 @@ func shouldPanic(t *testing.T, fn func()) {
 
 	fn()
 }
+
+func TestPutBucketForCap(t *testing.T) {
+	BlockSizes = []int{64, 128, 256, 512, 1024}
+
+	tests := []struct {
+		name        string
+		cap         int
+		expected    int
+		expectPanic bool
+	}{
+		{name: "ValidBlockSize64", cap: 64, expected: 0, expectPanic: false},
+		{name: "ValidBlockSize128", cap: 128, expected: 1, expectPanic: false},
+		{name: "ValidBlockSize256", cap: 256, expected: 2, expectPanic: false},
+		{name: "InvalidBlockSize", cap: 999, expected: -1, expectPanic: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.expectPanic {
+				defer func() {
+					if r := recover(); r == nil {
+						t.Errorf("Expected panic for cap %d, but no panic occurred", tt.cap)
+					}
+				}()
+			}
+
+			result := putBucketForCap(tt.cap)
+			if !tt.expectPanic && result != tt.expected {
+				t.Errorf("putBucketForCap(%d) = %d, want %d", tt.cap, result, tt.expected)
+			}
+		})
+	}
+}
